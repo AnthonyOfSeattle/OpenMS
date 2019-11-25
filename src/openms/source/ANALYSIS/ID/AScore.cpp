@@ -128,8 +128,11 @@ namespace OpenMS
     }
     vector<PeakSpectrum> windows_top10 = peakPickingPerWindowsInSpectrum_(real_spectrum);
 
+    // initialize cache for calculating scores
+    AScoreCache score_cache(fragment_mass_tolerance_, fragment_tolerance_ppm_, real_spectrum.back().getMZ());
+
     // calculate peptide score for each possible phospho site permutation
-    vector<vector<double>> peptide_site_scores = calculatePermutationPeptideScores_(th_spectra, windows_top10);
+    vector<vector<double>> peptide_site_scores = calculatePermutationPeptideScores_(th_spectra, windows_top10, score_cache);
 
     // rank peptide permutations ascending
     multimap<double, Size> ranking = rankWeightedPermutationPeptideScores_(peptide_site_scores);
@@ -171,7 +174,7 @@ namespace OpenMS
         {
           n_first += numberOfMatchedIons_(site_determining_ions[0], windows_top10[window_idx], s_it->peak_depth);        
         }
-        double P_first = computeCumulativeScore_(N, n_first, p);
+        double P_first = score_cache.computeCumulativeScore(N, n_first, s_it->peak_depth);
 
         Size n_second = 0; // number of matching peaks for second peptide
         for (Size window_idx = 0; window_idx <  windows_top10.size(); ++window_idx) //each 100 m/z window
@@ -179,12 +182,11 @@ namespace OpenMS
           n_second += numberOfMatchedIons_(site_determining_ions[1], windows_top10[window_idx], s_it->peak_depth);        
         }
         Size N2 = site_determining_ions[1].size(); // all possibilities have the same number so take the first one
-        double P_second = computeCumulativeScore_(N2, n_second, p);
+        double P_second = score_cache.computeCumulativeScore(N2, n_second, s_it->peak_depth);
 
         //abs is used to avoid -0 score values
         double score_first = abs(-10 * log10(P_first));
         double score_second = abs(-10 * log10(P_second));
-
         OPENMS_LOG_DEBUG << "\tfirst - N: " << N << ",p: " << p << ",n: " << n_first << ", score: " << score_first << std::endl;
         OPENMS_LOG_DEBUG << "\tsecond - N: " << N2 << ",p: " << p << ",n: " << n_second << ", score: " << score_second << std::endl;
 
@@ -550,7 +552,7 @@ namespace OpenMS
     return windows_top10;
   }
   
-  std::vector<std::vector<double>> AScore::calculatePermutationPeptideScores_(vector<PeakSpectrum>& th_spectra, const vector<PeakSpectrum>& windows_top10) const
+  std::vector<std::vector<double>> AScore::calculatePermutationPeptideScores_(vector<PeakSpectrum>& th_spectra, const vector<PeakSpectrum>& windows_top10, AScoreCache& score_cache) const
   {
     //prepare peak depth for all windows in the actual spectrum
     vector<vector<double>> permutation_peptide_scores(th_spectra.size());
@@ -569,9 +571,8 @@ namespace OpenMS
         {
           n += numberOfMatchedIons_(*it, windows_top10[current_win], i);
         }
-        double p = static_cast<double>(i) / 100.0;
-        double cumulative_score = computeCumulativeScore_(N, n, p);
-        
+        double cumulative_score = score_cache.computeCumulativeScore(N, n, i);
+
         //abs is used to avoid -0 score values
         (*site_score)[i - 1] = abs((-10.0 * log10(cumulative_score)));
       }
@@ -624,6 +625,57 @@ namespace OpenMS
     max_peptide_length_ = param_.getValue("max_peptide_length");
     max_permutations_ = param_.getValue("max_num_perm");
     unambiguous_score_ = param_.getValue("unambiguous_score");
+  }
+
+  /// Cache implementation
+  AScoreCache::AScoreCache(double fragment_mass_tolerance, bool fragment_tolerance_ppm, double ppm_reference_mz)
+  {
+    score_maps_.resize(10);
+    match_probs_.resize(10);
+
+    match_probs_.front() = 2 * fragment_mass_tolerance / 100.;
+    if (fragment_tolerance_ppm) match_probs_.front() *= ppm_reference_mz * 1e-6;
+
+    for (Size i = 2; i <= match_probs_.size(); ++i)
+    {
+        match_probs_.at(i - 1) = static_cast<double>(i) * match_probs_.front();
+    }
+  }
+
+  double AScoreCache::computeCumulativeScore(Size N, Size n, Size depth)
+  {
+    OPENMS_PRECONDITION(n <= N, "The number of matched ions (n) can be at most as large as the number of trials (N).");
+
+    // return bad p value if none has been matched (see Beausoleil et al.)
+    if (n == 0) return 1.0;
+
+    std::unordered_map<UInt32, double>& scores = score_maps_.at(depth - 1);
+
+    UInt32 score_hash = static_cast<UInt32>(N) << 16 | n;
+    if ( scores.count(score_hash) ) return scores.at(score_hash);
+
+    double survival_function = 0.;
+    if (n < N) survival_function = computeCumulativeScore(N, n + 1, depth);
+
+    double coeff = 0;
+
+    try
+    {
+      coeff = boost::math::binomial_coefficient<double>((unsigned int)N, (unsigned int)n);
+    }
+    catch (std::overflow_error const& /*e*/)
+    {
+      coeff = std::numeric_limits<double>::max();
+    }
+
+    double p = match_probs_.at(depth - 1);
+    double pow1 = pow((double)p, (int)n);
+    double pow2 = pow(double(1 - p), double(N - n));
+
+    scores[score_hash] = coeff * pow1 * pow2 + survival_function;
+
+    return scores.at(score_hash);
+
   }
   
 } // namespace OpenMS

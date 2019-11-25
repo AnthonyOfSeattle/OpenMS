@@ -43,6 +43,7 @@
 
 #include <limits>
 #include <vector>
+#include <unordered_map>
 
 namespace OpenMS
 {
@@ -57,6 +58,18 @@ namespace OpenMS
     Size seq_2; ///< index of permutation with site in unphosphorylated state
     Size peak_depth; ///< filtering level that gave rise to maximum discriminatory score
     Size AScore;
+  };
+
+  class AScoreCache {
+    public:
+      AScoreCache(double fragment_mass_tolerance, bool fragment_tolerance_ppm, double ppm_reference_mz);
+
+      /// Computes the cumulative binomial probabilities and caches results.
+      double computeCumulativeScore(Size N, Size n, Size depth);
+
+    private:
+      std::vector<double> match_probs_;
+      std::vector<std::unordered_map<UInt32, double>> score_maps_;
   };
   
   /**
@@ -183,7 +196,7 @@ namespace OpenMS
     std::vector<PeakSpectrum> peakPickingPerWindowsInSpectrum_(PeakSpectrum& real_spectrum) const;
     
     /// Create 10 scores for each theoretical spectrum (permutation), according to Beausoleil et al. Figure 3 b
-    std::vector<std::vector<double>> calculatePermutationPeptideScores_(std::vector<PeakSpectrum>& th_spectra, const std::vector<PeakSpectrum>& windows_top10) const;
+    std::vector<std::vector<double>> calculatePermutationPeptideScores_(std::vector<PeakSpectrum>& th_spectra, const std::vector<PeakSpectrum>& windows_top10, AScoreCache& score_cache) const;
     
     /// Rank weighted permutation scores ascending
     std::multimap<double, Size> rankWeightedPermutationPeptideScores_(const std::vector<std::vector<double>>& peptide_site_scores) const;
@@ -197,7 +210,7 @@ namespace OpenMS
     Size max_peptide_length_; ///< Limit for peptide lengths that can be analyzed
     Size max_permutations_; ///< Limit for number of sequence permutations that can be handled
     double unambiguous_score_; ///< Score for unambiguous assignments (all sites phosphorylated)
-    
+
   };
 
 } // namespace OpenMS
